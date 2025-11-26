@@ -90,7 +90,7 @@ def build_graph(agent_names):
     return G
 
 
-def inject_initial_rumor(env: SocialEnv):
+def inject_initial_rumor(env: SocialEnv, topic: str | None = None):
     """
     t=0，媒体发第一条热点爆料。
     """
@@ -109,24 +109,45 @@ def inject_initial_rumor(env: SocialEnv):
         sentiment="NEGATIVE",
         tag="rumor",
         target_post_id=None,
+        topic=topic,
     )
 
 
-def run_once(T: int = 10, seed: int = 42):
+def simulate_steps(
+    T: int = 10,
+    seed: int = 42,
+    topics: list[str] | None = None,
+    request_delay: float = 0.0,
+):
+    """
+    运行多时间步模拟，返回环境、每步新增帖子列表、以及话题热度快照。
+    """
     random.seed(seed)
 
     llm = LLMClient()
     agents = build_agents(llm)
     G = build_graph(agents.keys())
-    env = SocialEnv(agents, G)
+    env = SocialEnv(agents, G, topics=topics)
 
-    inject_initial_rumor(env)
+    # 初始爆料关联首个话题
+    topic0 = topics[0] if topics else None
+    inject_initial_rumor(env, topic=topic0)
 
+    steps = []
+    heat_history = []
     for t in range(1, T + 1):
-        print(f"=== 时间步 {t} ===")
-        new_posts = env.step()
-        for p in new_posts:
-            print(f"[{p.time_step}] {p.author}: {p.text} (sentiment={p.sentiment})")
+        new_posts = env.step(request_delay=request_delay)
+        steps.append(new_posts)
+        if env.topic_manager:
+            snapshot = {"time": env.t}
+            for topic in env.topic_manager.topics:
+                snapshot[topic] = env.topic_manager.get_heat(topic)
+            heat_history.append(snapshot)
+    return env, steps, heat_history
+
+
+def run_once(T: int = 10, seed: int = 42):
+    env, steps, _ = simulate_steps(T=T, seed=seed)
 
     rows = []
     for p in env.posts:
@@ -144,33 +165,3 @@ def run_once(T: int = 10, seed: int = 42):
 if __name__ == "__main__":
     df = run_once(T=8, seed=123)
     print("总帖子数:", len(df))
-
-    # 话题热度 + 霍克斯过程 + 多代理容器演示（简版）
-    topics = ["数据泄露", "品牌回应", "用户情绪"]
-    llm = LLMClient()
-
-    def make_topic_agent(idx, tps):
-        return Agent(
-            name=f"TopicAgent{idx}",
-            role="generic",
-            profile="关注多话题的用户",
-            llm_client=llm,
-            topics=list(tps),
-        )
-
-    hawkes_params = {"alpha": 1.0, "beta": 0.5, "mu": 0.1}
-    topic_manager = TopicManager(topics, hawkes_params=hawkes_params)
-    hawkes_process = HawkesProcess(**hawkes_params)
-    system = MultiAgentSystem(
-        agent_count=5,
-        topics=topics,
-        agent_factory=make_topic_agent,
-    )
-
-    for step in range(10):
-        system.run_simulation_step(topic_manager)
-        if hawkes_process.simulate_event(step):
-            topic_sel = np.random.choice(topics)
-            topic_manager.add_post(topic_sel, f"外部事件触发（t={step}）", current_time=step)
-        heats = {t: topic_manager.get_heat(t) for t in topics}
-        print(f"[Topic demo] t={step}, heats={heats}")

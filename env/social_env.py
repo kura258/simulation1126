@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence
+import time
 
 import networkx as nx
 
@@ -154,7 +155,7 @@ class SocialEnv:
 
     # ---- 推进一个时间步 ----
 
-    def step(self):
+    def step(self, request_delay: float = 0.0):
         """
         执行一个时间步：所有 Agent 基于可见帖子发言，用于话题热度与传播模拟。
         """
@@ -180,5 +181,7 @@ class SocialEnv:
             )
             new_posts.append(p)
             agent.observe(f"我在时间 {self.t} 在社交媒体上发了：{p.text}")
+            if request_delay > 0:
+                time.sleep(request_delay)
 
         return new_posts
