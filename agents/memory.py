@@ -36,7 +36,7 @@ class MemoryStream:
 
         # 只在第一次初始化时加载一次模型
         if MemoryStream._embed_model is None:
-            MemoryStream._embed_model = SentenceTransformer("all-MiniLM-L6-v2")
+            MemoryStream._embed_model = SentenceTransformer("models/all-MiniLM-L6-v2")
         self.model = MemoryStream._embed_model
 
         self.memories = []

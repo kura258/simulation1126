@@ -1,7 +1,10 @@
 # agents/agent.py
 from __future__ import annotations
 
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
+
+import random
+import numpy as np
 
 from .memory import MemoryStream
 
@@ -23,6 +26,8 @@ class Agent:
         role: str,
         profile: str,
         llm_client,
+        topics: Optional[List[str]] = None,
+        attention_weights: Optional[Dict[str, float]] = None,
     ):
         """
         :param name: Agent 名字（如 "BrandOfficial", "AngryUser1"）
@@ -34,7 +39,75 @@ class Agent:
         self.role = role
         self.profile = profile
         self.llm = llm_client
+        self.topics = topics or []
+        self.attention_weights = self._init_attention_weights(attention_weights)
+        self.history: List[str] = []
         self.memory = MemoryStream(llm_client=llm_client)
+
+    def _init_attention_weights(
+        self, provided_weights: Optional[Dict[str, float]]
+    ) -> Dict[str, float]:
+        """
+        初始化并规范化注意力权重，允许调用方传入权重或使用随机权重。
+        """
+        weights = provided_weights or {topic: random.random() for topic in self.topics}
+        if not weights and self.topics:
+            weights = {topic: 1.0 for topic in self.topics}
+
+        # 只保留当前已知话题，并为缺失话题补充随机权重
+        weights = {t: w for t, w in weights.items() if t in self.topics}
+        for topic in self.topics:
+            weights.setdefault(topic, random.random())
+
+        return self._normalize_attention(weights)
+
+    def _normalize_attention(self, weights: Dict[str, float]) -> Dict[str, float]:
+        total = sum(max(w, 0.0) for w in weights.values())
+        if total <= 0:
+            if not self.topics:
+                return {}
+            uniform = 1.0 / len(self.topics)
+            return {topic: uniform for topic in self.topics}
+        return {topic: max(w, 0.0) / total for topic, w in weights.items()}
+
+    def update_attention(self, new_attention_weights: Dict[str, float]):
+        """
+        更新代理对各话题的注意力权重。
+        """
+        for topic in new_attention_weights:
+            if topic not in self.topics:
+                self.topics.append(topic)
+        merged = {**self.attention_weights, **new_attention_weights}
+        self.attention_weights = self._normalize_attention(merged)
+
+    def select_topic(self) -> Optional[str]:
+        """
+        根据注意力分布选择一个话题，如果没有话题则返回 None。
+        """
+        if not self.topics:
+            return None
+        weights = np.array([self.attention_weights.get(t, 0.0) for t in self.topics], dtype=float)
+        if weights.sum() <= 0:
+            weights = np.ones(len(self.topics)) / len(self.topics)
+        else:
+            weights = weights / weights.sum()
+        return np.random.choice(self.topics, p=weights)
+
+    def interact(self, environment):
+        """
+        代理根据当前关注的话题与环境互动，记录历史。
+        """
+        topic = self.select_topic()
+        if topic is None:
+            return None
+        print(f"Agent {self.name} interacts with topic {topic}")
+        self.history.append(topic)
+        # 优先调用环境的记录接口，否则尝试直接向话题管理器添加记录
+        if hasattr(environment, "record_topic_interaction"):
+            environment.record_topic_interaction(topic, f"{self.name} interacted with {topic}")
+        elif hasattr(environment, "add_post"):
+            environment.add_post(topic, f"{self.name} interacted with {topic}")
+        return topic
 
     # ------------------------------------------------------------------
     # 记忆相关：观察外界事件

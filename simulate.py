@@ -8,6 +8,7 @@ import networkx as nx
 import pandas as pd
 import os
 import sys
+import numpy as np
 
 # 把当前文件所在目录（项目根目录）加入模块搜索路径
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -16,12 +17,15 @@ if CURRENT_DIR not in sys.path:
 
 from agents.llm_client import LLMClient
 from agents.agent import Agent
+from agents.multi_agent_system import MultiAgentSystem
 from env.social_env import SocialEnv
+from env.social_env import TopicManager
 from pr_strategies.strategies import (
     DoNothingStrategy,
     DelayedApologyStrategy,
     FastClarifyStrategy,
 )
+from utils.spread_model import HawkesProcess
 
 
 def build_agents(llm: LLMClient) -> Dict[str, Agent]:
@@ -192,3 +196,33 @@ def run_once(strategy_name: str = "S0", T: int = 10, seed: int = 42):
 if __name__ == "__main__":
     df = run_once(strategy_name="S1", T=8, seed=123)
     print("总帖子数:", len(df))
+
+    # 示例：使用话题热度 + 霍克斯过程 + 多代理容器的简易演示
+    topics = ["数据泄露", "品牌回应", "用户情绪"]
+    llm = LLMClient()
+
+    def make_topic_agent(idx, tps):
+        return Agent(
+            name=f"TopicAgent{idx}",
+            role="generic",
+            profile="关注多话题的用户",
+            llm_client=llm,
+            topics=list(tps),
+        )
+
+    hawkes_params = {"alpha": 1.0, "beta": 0.5, "mu": 0.1}
+    topic_manager = TopicManager(topics, hawkes_params=hawkes_params)
+    hawkes_process = HawkesProcess(**hawkes_params)
+    system = MultiAgentSystem(
+        agent_count=5,
+        topics=topics,
+        agent_factory=make_topic_agent,
+    )
+
+    for step in range(10):
+        system.run_simulation_step(topic_manager)
+        if hawkes_process.simulate_event(step):
+            topic_sel = np.random.choice(topics)
+            topic_manager.add_post(topic_sel, f"External event at t={step}", current_time=step)
+        heats = {t: topic_manager.get_heat(t) for t in topics}
+        print(f"[Topic demo] t={step}, heats={heats}")
