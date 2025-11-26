@@ -137,11 +137,9 @@ class Agent:
           ...
         ]
         """
-        mem_items = self.memory.retrieve(
-            query="星光电子 数据泄露 危机公关 社交媒体 舆论 事件",
-            k=5,
-        )
-        mem_text = "\n".join(f"- {m.text}" for m in mem_items) or "（暂无特别重要的相关记忆）"
+        query = " ".join(self.topics) if self.topics else "近期热点 话题 热度 舆情"
+        mem_items = self.memory.retrieve(query=query, k=5)
+        mem_text = "\n".join(f"- {m.text}" for m in mem_items) or "（暂无重要的相关记忆）"
 
         posts_str = "\n".join(
             f"- 来自 {p['author']}：{p['summary']}（情绪：{p['sentiment']}，标签：{p['tag']}）"
@@ -149,33 +147,29 @@ class Agent:
         ) or "（此时间步你没有看到任何新帖子）"
 
         prompt = f"""
-你的名字是：{self.name}
-你的角色类型是：{self.role}
-你的背景和性格设定如下：{self.profile}
+你的名字：{self.name}
+你的角色类型：{self.role}
+你的背景和性格设定：{self.profile}
 
-你目前记得这些与“星光电子数据泄露事件”相关的事情：
+你目前记得的与热点话题相关的信息：
 {mem_text}
 
 现在是时间步 {t}，你在社交媒体上看到了这些新帖子（来自你关注的人）：
 {posts_str}
 
-你需要根据自己的角色和立场，决定此时是否在平台上发声，以及如何发声。
+你需要根据自己的角色和立场，决定是否发声，并选择要聚焦的话题。
 请注意：
-1. 你是生活在中文互联网环境的用户，请只使用简体中文表达。
-2. 你在社交媒体上的行为类型只能是：发原创帖（post）、转发已有帖子（retweet）、或保持沉默（silent）。
-3. 如果你选择发帖或转发，请用符合你角色设定的语气，写 1~2 句内容。
-输出格式要求（非常重要）：
-- 只能输出一个 JSON 对象，不要添加任何解释性文字。
-- JSON 字段如下：
-  {{
-    "action": "post" 或 "retweet" 或 "silent",
-    "post_text": "如果 action 不是 silent，这里写你要发的中文内容 1~2 句；若是 silent，可为空字符串",
-    "sentiment": "POSITIVE" 或 "NEGATIVE" 或 "NEUTRAL",
-    "target_post_id": "如果是 retweet，这里写你要转发的帖子的 id（数字）；否则为 null",
-    "topic": "可选，关联的话题"
-  }}
-
-请严格按上述 JSON 结构输出，并确保是合法 JSON（双引号、逗号位置正确）。
+1. 只使用简体中文表达。
+2. 行为类型只能是：发原创帖（post）、转发已有帖子（retweet）、或保持沉默（silent）。
+3. 如发帖/转发，请用符合角色设定的语气，写 1~2 句内容，并注明你聚焦的话题（topic）。
+输出格式要求（必须是合法 JSON）：
+{{
+  "action": "post" 或 "retweet" 或 "silent",
+  "post_text": "若 action 不是 silent，这里写 1~2 句中文；若 silent，可为空字符串",
+  "sentiment": "POSITIVE" 或 "NEGATIVE" 或 "NEUTRAL",
+  "target_post_id": "若是 retweet，写要转发的帖子的 id（数字）；否则为 null",
+  "topic": "选填，聚焦的话题"
+}}
 """
         return prompt
 

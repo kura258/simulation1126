@@ -154,42 +154,14 @@ class SocialEnv:
 
     # ---- 推进一个时间步 ----
 
-    def step(self, pr_strategy=None):
+    def step(self):
         """
-        执行一个时间步：
-        1) 品牌官方优先依据 PR 策略发言。
-        2) 其他 Agent 根据观察到的帖子发言。
+        执行一个时间步：所有 Agent 基于可见帖子发言，用于话题热度与传播模拟。
         """
         self.t += 1
         new_posts: List[Post] = []
 
-        # 1) 品牌官方
-        if pr_strategy is not None and hasattr(pr_strategy, "brand_name"):
-            brand_name = pr_strategy.brand_name
-            brand_agent = self.agents[brand_name]
-            observed = self.get_visible_posts_for(brand_name)
-            brand_action = pr_strategy.decide_brand_action(
-                t=self.t,
-                agent=brand_agent,
-                observed_posts=observed,
-            )
-            if brand_action and brand_action["action"] != "silent":
-                p = self._add_post(
-                    author=brand_name,
-                    text=brand_action["post_text"],
-                    sentiment=brand_action.get("sentiment", "NEUTRAL"),
-                    tag="official",
-                    target_post_id=brand_action.get("target_post_id"),
-                    topic=brand_action.get("topic"),
-                )
-                new_posts.append(p)
-                brand_agent.observe(f"我在时间 {self.t} 发了官方声明：{p.text}")
-
-        # 2) 其他代理
         for name, agent in self.agents.items():
-            if pr_strategy is not None and name == getattr(pr_strategy, "brand_name", None):
-                continue
-
             observed = self.get_visible_posts_for(name)
             if not observed:
                 continue
