@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from typing import Callable, Iterable, List, Optional, Sequence
 
@@ -7,7 +7,7 @@ from .agent import Agent
 
 class MultiAgentSystem:
     """
-    Simple container to manage multiple agents via a provided list or factory.
+    简单的多代理容器，可通过现有 Agent 列表或工厂函数批量创建并驱动互动。
     """
 
     def __init__(
@@ -24,16 +24,16 @@ class MultiAgentSystem:
             self.agents.extend(agents)
         elif agent_count > 0:
             if agent_factory is None:
-                raise ValueError("Provide agent_factory or agents to build the system")
+                raise ValueError("需要提供 agent_factory 或现成的 agents 才能构造多代理系统")
             for idx in range(agent_count):
                 self.agents.append(agent_factory(idx, self.topics))
 
         if not self.agents:
-            raise ValueError("MultiAgentSystem requires at least one Agent instance")
+            raise ValueError("MultiAgentSystem 至少需要一个 Agent 实例")
 
     def run_simulation_step(self, environment) -> None:
         """
-        Drive each agent to interact with the environment once.
+        逐个驱动代理与环境交互一次。
         """
         for agent in self.agents:
             agent.interact(environment)

@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence
@@ -22,7 +22,7 @@ class Post:
 
 class TopicManager:
     """
-    Track topics, their heat, and associated posts using a Hawkes process per topic.
+    话题管理器：为每个话题维护帖子列表、热度以及一个霍克斯过程（自激传播）。
     """
 
     def __init__(self, topics: Sequence[str], hawkes_params: Optional[Dict[str, float]] = None):
@@ -36,7 +36,7 @@ class TopicManager:
 
     def add_post(self, topic: str, post_content: str, current_time: float = 0.0) -> None:
         """
-        Add a post under a topic, bump heat, and update Hawkes-triggered spread.
+        向指定话题添加内容，提升热度，并通过霍克斯过程模拟自激增加。
         """
         if topic not in self.topics:
             return
@@ -45,24 +45,23 @@ class TopicManager:
 
         process = self.processes.get(topic)
         if process and process.simulate_event(current_time):
-            # Hawkes-triggered additional heat
             self.topics[topic]["heat"] += 1
 
     def get_heat(self, topic: str) -> int:
         """
-        Return current heat for a topic.
+        获取话题当前热度，未知话题返回 0。
         """
         return self.topics.get(topic, {}).get("heat", 0)
 
 
 class SocialEnv:
     """
-    Social media simulation environment.
-    - G: directed follow graph
-    - agents: name -> Agent
-    - posts: history of posts
-    - t: current time step
-    - topic_manager: manage topic heat and posts
+    社交媒体模拟环境。
+    - G：有向关注图
+    - agents：name -> Agent
+    - posts：历史帖子列表
+    - t：当前时间步
+    - topic_manager：管理话题热度与帖子
     """
 
     def __init__(
@@ -90,7 +89,7 @@ class SocialEnv:
         if self._topics:
             self.topic_manager = TopicManager(self._topics, self._hawkes_params)
 
-    # ---- internal helpers ----
+    # ---- 内部工具 ----
 
     def _add_post(
         self,
@@ -121,14 +120,14 @@ class SocialEnv:
 
     def record_topic_interaction(self, topic: str, content: str = "") -> None:
         """
-        Allow external callers (e.g., agents) to bump topic heat.
+        允许外部调用（如 Agent）直接为话题记录一次互动，提升热度。
         """
         if self.topic_manager:
             self.topic_manager.add_post(topic, content or f"interaction on {topic}", current_time=self.t)
 
     def get_topic_heat(self, topic: str) -> int:
         """
-        Fetch heat for a given topic. Returns 0 if topic is unknown.
+        获取指定话题热度。
         """
         if not self.topic_manager:
             return 0
@@ -136,7 +135,7 @@ class SocialEnv:
 
     def get_visible_posts_for(self, agent_name: str) -> List[Dict[str, Any]]:
         """
-        At time step t, agent_name can see posts from followed agents at t-1.
+        在时间步 t，agent_name 可以看到 t-1 时刻其关注对象发布的帖子。
         """
         following = list(self.G.successors(agent_name))
         recent_posts = [p for p in self.posts if p.author in following and p.time_step == self.t - 1]
@@ -153,18 +152,18 @@ class SocialEnv:
             })
         return result
 
-    # ---- core: advance one step ----
+    # ---- 推进一个时间步 ----
 
     def step(self, pr_strategy=None):
         """
-        Execute one time step:
-        1) Brand agent acts first via PR strategy.
-        2) Other agents act based on observed posts.
+        执行一个时间步：
+        1) 品牌官方优先依据 PR 策略发言。
+        2) 其他 Agent 根据观察到的帖子发言。
         """
         self.t += 1
         new_posts: List[Post] = []
 
-        # 1) brand official
+        # 1) 品牌官方
         if pr_strategy is not None and hasattr(pr_strategy, "brand_name"):
             brand_name = pr_strategy.brand_name
             brand_agent = self.agents[brand_name]
@@ -184,9 +183,9 @@ class SocialEnv:
                     topic=brand_action.get("topic"),
                 )
                 new_posts.append(p)
-                brand_agent.observe(f"I posted an official statement at t={self.t}: {p.text}")
+                brand_agent.observe(f"我在时间 {self.t} 发了官方声明：{p.text}")
 
-        # 2) other agents
+        # 2) 其他代理
         for name, agent in self.agents.items():
             if pr_strategy is not None and name == getattr(pr_strategy, "brand_name", None):
                 continue
@@ -208,6 +207,6 @@ class SocialEnv:
                 topic=action.get("topic"),
             )
             new_posts.append(p)
-            agent.observe(f"I posted on social media at t={self.t}: {p.text}")
+            agent.observe(f"我在时间 {self.t} 在社交媒体上发了：{p.text}")
 
         return new_posts

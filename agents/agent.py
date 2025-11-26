@@ -12,12 +12,11 @@ from .memory import MemoryStream
 class Agent:
     """
     多智能体舆论模拟中的单个 Agent。
-
     特点：
     - 拥有角色类型（brand_official / angry_user / neutral_user / fan_user / media 等）
     - 拥有人物设定 profile（背景、性格）
     - 拥有 MemoryStream（记忆系统）
-    - 能根据看到的帖子，在社交媒体上决定：post / retweet / silent
+    - 能根据看到的帖子在社交媒体上决定：post / retweet / silent
     """
 
     def __init__(
@@ -34,6 +33,8 @@ class Agent:
         :param role: 角色类型（如 "brand_official", "angry_user"）
         :param profile: 角色设定描述（自然语言）
         :param llm_client: 封装好的 LLMClient，拥有 chat / chat_thinking 方法
+        :param topics: 关注的话题列表
+        :param attention_weights: 话题注意力权重
         """
         self.name = name
         self.role = role
@@ -48,13 +49,12 @@ class Agent:
         self, provided_weights: Optional[Dict[str, float]]
     ) -> Dict[str, float]:
         """
-        初始化并规范化注意力权重，允许调用方传入权重或使用随机权重。
+        初始化并规范化注意力权重，允许传入或自动生成随机权重。
         """
         weights = provided_weights or {topic: random.random() for topic in self.topics}
         if not weights and self.topics:
             weights = {topic: 1.0 for topic in self.topics}
 
-        # 只保留当前已知话题，并为缺失话题补充随机权重
         weights = {t: w for t, w in weights.items() if t in self.topics}
         for topic in self.topics:
             weights.setdefault(topic, random.random())
@@ -82,7 +82,7 @@ class Agent:
 
     def select_topic(self) -> Optional[str]:
         """
-        根据注意力分布选择一个话题，如果没有话题则返回 None。
+        按注意力分布选择一个话题；若没有话题则返回 None。
         """
         if not self.topics:
             return None
@@ -95,14 +95,14 @@ class Agent:
 
     def interact(self, environment):
         """
-        代理根据当前关注的话题与环境互动，记录历史。
+        代理根据当前关注的话题与环境互动，并记录历史。
         """
         topic = self.select_topic()
         if topic is None:
             return None
         print(f"Agent {self.name} interacts with topic {topic}")
         self.history.append(topic)
-        # 优先调用环境的记录接口，否则尝试直接向话题管理器添加记录
+        # 优先通过环境记录话题互动，若无该接口则尝试直接写入话题管理器
         if hasattr(environment, "record_topic_interaction"):
             environment.record_topic_interaction(topic, f"{self.name} interacted with {topic}")
         elif hasattr(environment, "add_post"):
@@ -115,8 +115,7 @@ class Agent:
 
     def observe(self, observation: str):
         """
-        将一段文本写入记忆流。
-        在当前简化版中，我们主要把“自己发了什么 / 看到的关键事件”写进去。
+        将一段文本写入记忆流；用于记录“自己发了什么/看到的关键事件”。
         """
         self.memory.add(observation)
         self.memory.maybe_reflect()
@@ -131,22 +130,13 @@ class Agent:
         observed_posts: List[Dict[str, Any]],
     ) -> str:
         """
-        构造让 Agent 在社交媒体上决策用的 prompt。
-
-        observed_posts 的结构大致为：
+        构造让 Agent 在社交媒体上决策的 prompt。
+        observed_posts 形如：
         [
-          {
-            "id": 1,
-            "author": "Media1",
-            "text": "...",
-            "summary": "...",
-            "sentiment": "NEGATIVE",
-            "tag": "rumor"
-          },
+          {"id": 1, "author": "Media1", "text": "...", "summary": "...", "sentiment": "NEGATIVE", "tag": "rumor"},
           ...
         ]
         """
-        # 从记忆中检索与“舆情、公关、星光电子事件”相关的记忆
         mem_items = self.memory.retrieve(
             query="星光电子 数据泄露 危机公关 社交媒体 舆论 事件",
             k=5,
@@ -161,8 +151,7 @@ class Agent:
         prompt = f"""
 你的名字是：{self.name}
 你的角色类型是：{self.role}
-你的背景和性格设定如下：
-{self.profile}
+你的背景和性格设定如下：{self.profile}
 
 你目前记得这些与“星光电子数据泄露事件”相关的事情：
 {mem_text}
@@ -171,23 +160,22 @@ class Agent:
 {posts_str}
 
 你需要根据自己的角色和立场，决定此时是否在平台上发声，以及如何发声。
-
 请注意：
-1. 你是生活在中文互联网环境中的用户，请只使用简体中文表达，不要出现任何英文单词或句子。
-2. 你在社交媒体上的行为类型只能是：发原创帖（post）、转发某条已有帖子（retweet）、或者保持沉默（silent）。
-3. 如果你选择发帖或转发，请用符合你角色设定的语气写 1~2 句内容。
-
+1. 你是生活在中文互联网环境的用户，请只使用简体中文表达。
+2. 你在社交媒体上的行为类型只能是：发原创帖（post）、转发已有帖子（retweet）、或保持沉默（silent）。
+3. 如果你选择发帖或转发，请用符合你角色设定的语气，写 1~2 句内容。
 输出格式要求（非常重要）：
 - 只能输出一个 JSON 对象，不要添加任何解释性文字。
-- JSON 的字段为：
+- JSON 字段如下：
   {{
     "action": "post" 或 "retweet" 或 "silent",
-    "post_text": "如果 action 不是 silent，这里写你要发的中文内容，1~2 句；如果是 silent，则可以是空字符串",
+    "post_text": "如果 action 不是 silent，这里写你要发的中文内容 1~2 句；若是 silent，可为空字符串",
     "sentiment": "POSITIVE" 或 "NEGATIVE" 或 "NEUTRAL",
-    "target_post_id": "如果是 retweet，这里写你要转发的帖子的 id（数字）；否则为 null"
+    "target_post_id": "如果是 retweet，这里写你要转发的帖子的 id（数字）；否则为 null",
+    "topic": "可选，关联的话题"
   }}
 
-请严格按照上述 JSON 结构输出，并确保是合法的 JSON（双引号、逗号位置正确）。
+请严格按上述 JSON 结构输出，并确保是合法 JSON（双引号、逗号位置正确）。
 """
         return prompt
 
@@ -206,12 +194,12 @@ class Agent:
           "action": "post" / "retweet" / "silent",
           "post_text": "...",
           "sentiment": "POSITIVE" / "NEGATIVE" / "NEUTRAL",
-          "target_post_id": int 或 None
+          "target_post_id": int 或 None,
+          "topic": 可选话题
         }
         """
-        # system prompt：强约束中文 + JSON 输出
         system = (
-            "你是一个在中文社交媒体上发言的普通用户或账号。"
+            "你是一个在中文社交媒体上发言的用户或账号。"
             "你需要根据用户记忆和看到的帖子，决定是否发声。"
             "请严格按照用户提供的 JSON 格式输出结果，不要输出多余文字。"
             "所有内容必须使用简体中文，不要出现任何英文单词或句子。"
@@ -222,9 +210,9 @@ class Agent:
 
         # 尝试解析 JSON，失败则回退为沉默
         import json
+
         try:
             action = json.loads(resp)
-            # 做一点简单的健壮性处理
             if action.get("action") not in ("post", "retweet", "silent"):
                 raise ValueError("invalid action")
             if action.get("action") == "silent":
@@ -234,7 +222,6 @@ class Agent:
             else:
                 action.setdefault("post_text", "")
                 action.setdefault("sentiment", "NEUTRAL")
-                # target_post_id 如果不是数字，统一置为 None
                 tgt = action.get("target_post_id")
                 if isinstance(tgt, str) and tgt.isdigit():
                     action["target_post_id"] = int(tgt)

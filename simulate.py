@@ -1,25 +1,23 @@
-
 # simulate.py
 from __future__ import annotations
+import os
 import random
+import sys
 from typing import Dict
 
 import networkx as nx
-import pandas as pd
-import os
-import sys
 import numpy as np
+import pandas as pd
 
-# 把当前文件所在目录（项目根目录）加入模块搜索路径
+# 把项目根目录加入模块搜索路径
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 if CURRENT_DIR not in sys.path:
     sys.path.insert(0, CURRENT_DIR)
 
-from agents.llm_client import LLMClient
 from agents.agent import Agent
+from agents.llm_client import LLMClient
 from agents.multi_agent_system import MultiAgentSystem
-from env.social_env import SocialEnv
-from env.social_env import TopicManager
+from env.social_env import SocialEnv, TopicManager
 from pr_strategies.strategies import (
     DoNothingStrategy,
     DelayedApologyStrategy,
@@ -31,7 +29,6 @@ from utils.spread_model import HawkesProcess
 def build_agents(llm: LLMClient) -> Dict[str, Agent]:
     agents: Dict[str, Agent] = {}
 
-    # 品牌官方
     agents["BrandOfficial"] = Agent(
         name="BrandOfficial",
         role="brand_official",
@@ -39,7 +36,6 @@ def build_agents(llm: LLMClient) -> Dict[str, Agent]:
         llm_client=llm,
     )
 
-    # 愤怒用户
     for i in range(5):
         name = f"AngryUser{i+1}"
         agents[name] = Agent(
@@ -49,17 +45,15 @@ def build_agents(llm: LLMClient) -> Dict[str, Agent]:
             llm_client=llm,
         )
 
-    # 中立吃瓜群众
     for i in range(5):
         name = f"NeutralUser{i+1}"
         agents[name] = Agent(
             name=name,
             role="neutral_user",
-            profile="对事件抱观望态度，容易被他人观点影响。",
+            profile="对事件保持观望，容易被他人观点影响。",
             llm_client=llm,
         )
 
-    # 忠实粉丝
     for i in range(3):
         name = f"FanUser{i+1}"
         agents[name] = Agent(
@@ -69,7 +63,6 @@ def build_agents(llm: LLMClient) -> Dict[str, Agent]:
             llm_client=llm,
         )
 
-    # 媒体
     agents["Media1"] = Agent(
         name="Media1",
         role="media",
@@ -84,14 +77,14 @@ def build_graph(agent_names):
     G = nx.DiGraph()
     G.add_nodes_from(agent_names)
 
-    # 所有人都关注官方账号 + 媒体号
+    # 所有人都关注官方账号与媒体
     for name in agent_names:
         if name != "BrandOfficial":
             G.add_edge(name, "BrandOfficial")
         if name != "Media1":
             G.add_edge(name, "Media1")
 
-    # 再随机加一点社交关系
+    # 再随机补充一些关注关系
     names = list(agent_names)
     for src in names:
         for _ in range(3):
@@ -100,7 +93,6 @@ def build_graph(agent_names):
                 G.add_edge(src, dst)
 
     return G
-
 
 
 def inject_initial_rumor(env: SocialEnv):
@@ -124,11 +116,11 @@ def inject_initial_rumor(env: SocialEnv):
         target_post_id=None,
     )
 
+
 def create_simulation_instance(strategy_name: str, seed: int = 42):
     """
-    创建一套完整的模拟实例：llm + agents + graph + env + pr_strategy
-    用于前端同时运行多个策略。
-    每次调用会用同一个 seed 初始化，这样不同策略的网络结构相同。
+    创建完整模拟实例：llm + agents + graph + env + pr_strategy。
+    不同策略共用同一随机种子，方便对比。
     """
     random.seed(seed)
 
@@ -137,7 +129,6 @@ def create_simulation_instance(strategy_name: str, seed: int = 42):
     G = build_graph(agents.keys())
     env = SocialEnv(agents, G)
 
-    # 选择策略
     if strategy_name == "S0":
         strategy = DoNothingStrategy(brand_name="BrandOfficial")
     elif strategy_name == "S1":
@@ -147,11 +138,9 @@ def create_simulation_instance(strategy_name: str, seed: int = 42):
     else:
         raise ValueError(f"未知策略: {strategy_name}")
 
-    # 注入初始负面事件
     inject_initial_rumor(env)
 
     return env, strategy
-
 
 
 def run_once(strategy_name: str = "S0", T: int = 10, seed: int = 42):
@@ -179,7 +168,6 @@ def run_once(strategy_name: str = "S0", T: int = 10, seed: int = 42):
         for p in new_posts:
             print(f"[{p.time_step}] {p.author}: {p.text} (sentiment={p.sentiment})")
 
-    # 转成 DataFrame ，方便后续分析
     rows = []
     for p in env.posts:
         rows.append({
@@ -197,7 +185,7 @@ if __name__ == "__main__":
     df = run_once(strategy_name="S1", T=8, seed=123)
     print("总帖子数:", len(df))
 
-    # 示例：使用话题热度 + 霍克斯过程 + 多代理容器的简易演示
+    # 话题热度 + 霍克斯过程 + 多代理容器演示（简版）
     topics = ["数据泄露", "品牌回应", "用户情绪"]
     llm = LLMClient()
 
@@ -223,6 +211,6 @@ if __name__ == "__main__":
         system.run_simulation_step(topic_manager)
         if hawkes_process.simulate_event(step):
             topic_sel = np.random.choice(topics)
-            topic_manager.add_post(topic_sel, f"External event at t={step}", current_time=step)
+            topic_manager.add_post(topic_sel, f"外部事件触发（t={step}）", current_time=step)
         heats = {t: topic_manager.get_heat(t) for t in topics}
         print(f"[Topic demo] t={step}, heats={heats}")
