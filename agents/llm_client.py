@@ -25,6 +25,7 @@ class LLMClient:
         model_name: Optional[str] = None,
         base_url: Optional[str] = None,
         api_key: Optional[str] = None,
+        use_env_proxy: bool = False,
     ):
         # 加载 .env
         load_dotenv()
@@ -45,6 +46,11 @@ class LLMClient:
 
         # Chat Completions 端点（兼容 OpenAI 风格）
         self.chat_url = f"{self.base_url}/chat/completions"
+        # 控制是否使用系统代理。默认关闭以避免 ProxyError。
+        self._proxies = None
+        # 使用 requests.Session 以便控制 trust_env；默认不信任系统代理
+        self._session = requests.Session()
+        self._session.trust_env = use_env_proxy
 
     # ---------------- 核心请求封装 ---------------- #
 
@@ -85,11 +91,12 @@ class LLMClient:
 
         for attempt in range(3):
             try:
-                resp = requests.post(
+                resp = self._session.post(
                     self.chat_url,
                     json=payload,
                     headers=headers,
                     timeout=10000,
+                    proxies=self._proxies,
                 )
                 # 如果不是 2xx，会抛 HTTPError
                 resp.raise_for_status()

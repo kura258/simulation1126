@@ -1,4 +1,4 @@
-# agents/agent.py
+﻿# agents/agent.py
 from __future__ import annotations
 
 from typing import Dict, Any, List, Optional
@@ -80,18 +80,59 @@ class Agent:
         merged = {**self.attention_weights, **new_attention_weights}
         self.attention_weights = self._normalize_attention(merged)
 
-    def select_topic(self) -> Optional[str]:
+    def select_topic(self, environment=None, temperature: float = 1.2) -> Optional[str]:
         """
-        按注意力分布选择一个话题；若没有话题则返回 None。
+        按有限理性资源分配选择话题：兴趣(interest) + 社会关系(soc) + 热度(heat) + 噪声，Softmax(温度)。
         """
         if not self.topics:
             return None
-        weights = np.array([self.attention_weights.get(t, 0.0) for t in self.topics], dtype=float)
-        if weights.sum() <= 0:
-            weights = np.ones(len(self.topics)) / len(self.topics)
+
+        # 兴趣：使用注意力权重近似兴趣向量
+        interest = np.array([self.attention_weights.get(t, 0.0) for t in self.topics], dtype=float)
+        if interest.sum() <= 0:
+            interest = np.ones(len(self.topics)) / len(self.topics)
         else:
-            weights = weights / weights.sum()
-        return np.random.choice(self.topics, p=weights)
+            interest = interest / interest.sum()
+
+        # 社会关系：关注者最近一跳的帖子中同话题的占比
+        soc = np.zeros(len(self.topics), dtype=float)
+        if environment is not None and hasattr(environment, "G") and hasattr(environment, "posts"):
+            for idx, topic in enumerate(self.topics):
+                # 统计上一时间步里，关注对象在该话题的发帖数
+                follows = list(environment.G.successors(self.name)) if environment.G.has_node(self.name) else []
+                recent = [
+                    p for p in environment.posts
+                    if p.author in follows and p.time_step == environment.t - 1 and p.topic == topic
+                ]
+                total_recent = [
+                    p for p in environment.posts
+                    if p.author in follows and p.time_step == environment.t - 1
+                ]
+                soc[idx] = (len(recent) / max(len(total_recent), 1)) if total_recent else 0.0
+        if soc.sum() > 0:
+            soc = soc / soc.sum()
+
+        # 热度：来自 topic_manager
+        heat = np.zeros(len(self.topics), dtype=float)
+        if environment is not None and getattr(environment, "topic_manager", None):
+            tm = environment.topic_manager
+            heat = np.array([tm.get_heat(t) for t in self.topics], dtype=float)
+            if heat.sum() > 0:
+                heat = heat / heat.sum()
+
+        # 随机噪声，防止概率塌缩
+        noise = np.random.random(len(self.topics))
+        noise = noise / noise.sum()
+
+        # 效用函数 U = w1*interest + w2*soc + w3*log(heat+1) + w4*noise
+        log_heat = np.log(heat + 1e-6)  # 避免 log(0)
+        utility = 0.5 * interest + 0.2 * soc + 0.2 * log_heat + 0.1 * noise
+
+        # Softmax with temperature
+        scores = utility / max(temperature, 1e-6)
+        exp_scores = np.exp(scores - scores.max())
+        probs = exp_scores / exp_scores.sum()
+        return np.random.choice(self.topics, p=probs)
 
     def interact(self, environment):
         """
@@ -128,6 +169,7 @@ class Agent:
         self,
         t: int,
         observed_posts: List[Dict[str, Any]],
+        forced_topic: Optional[str] = None,
     ) -> str:
         """
         构造让 Agent 在社交媒体上决策的 prompt。
@@ -141,6 +183,9 @@ class Agent:
         mem_items = self.memory.retrieve(query=query, k=5)
         mem_text = "\n".join(f"- {m.text}" for m in mem_items) or "（暂无重要的相关记忆）"
 
+        topics_str = ", ".join(self.topics) if self.topics else "未给出"
+        topic_hint = forced_topic or (self.topics[0] if self.topics else "未知话题")
+
         posts_str = "\n".join(
             f"- 来自 {p['author']}：{p['summary']}（情绪：{p['sentiment']}，标签：{p['tag']}）"
             for p in observed_posts
@@ -150,6 +195,7 @@ class Agent:
 你的名字：{self.name}
 你的角色类型：{self.role}
 你的背景和性格设定：{self.profile}
+你当前关注的话题：{topics_str}
 
 你目前记得的与热点话题相关的信息：
 {mem_text}
@@ -157,11 +203,10 @@ class Agent:
 现在是时间步 {t}，你在社交媒体上看到了这些新帖子（来自你关注的人）：
 {posts_str}
 
-你需要根据自己的角色和立场，决定是否发声，并选择要聚焦的话题。
-请注意：
+你需要根据自己的角色和立场，决定是否发声，并选择要聚焦的话题。请注意：
 1. 只使用简体中文表达。
 2. 行为类型只能是：发原创帖（post）、转发已有帖子（retweet）、或保持沉默（silent）。
-3. 如发帖/转发，请用符合角色设定的语气，写 1~2 句内容，并注明你聚焦的话题（topic）。
+3. 如发帖/转发，请用符合角色设定的语气，写 1~2 句内容，并注明你聚焦的话题（topic）。优先围绕话题：{topic_hint}
 输出格式要求（必须是合法 JSON）：
 {{
   "action": "post" 或 "retweet" 或 "silent",
@@ -181,6 +226,7 @@ class Agent:
         self,
         t: int,
         observed_posts: List[Dict[str, Any]],
+        environment=None,
     ) -> Dict[str, Any]:
         """
         根据当前时间步 t 和能看到的帖子列表，返回一个动作：
@@ -198,7 +244,8 @@ class Agent:
             "请严格按照用户提供的 JSON 格式输出结果，不要输出多余文字。"
             "所有内容必须使用简体中文，不要出现任何英文单词或句子。"
         )
-        user = self._build_social_prompt(t, observed_posts)
+        forced_topic = self.select_topic(environment=environment)
+        user = self._build_social_prompt(t, observed_posts, forced_topic=forced_topic)
 
         resp = self.llm.chat(system, user)
 
@@ -229,6 +276,11 @@ class Agent:
                 "post_text": "",
                 "sentiment": "NEUTRAL",
                 "target_post_id": None,
+                "topic": forced_topic,
             }
+
+        # 如 LLM 未提供话题，则回填选定话题
+        if not action.get("topic"):
+            action["topic"] = forced_topic
 
         return action

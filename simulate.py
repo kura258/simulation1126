@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import random
 import sys
-from typing import Dict
+from typing import Dict, List, Optional
 
 import networkx as nx
 import numpy as np
@@ -21,7 +21,7 @@ from env.social_env import SocialEnv, TopicManager
 from utils.spread_model import HawkesProcess
 
 
-def build_agents(llm: LLMClient) -> Dict[str, Agent]:
+def build_agents(llm: LLMClient, topics: Optional[List[str]] = None) -> Dict[str, Agent]:
     agents: Dict[str, Agent] = {}
 
     agents["BrandOfficial"] = Agent(
@@ -29,6 +29,7 @@ def build_agents(llm: LLMClient) -> Dict[str, Agent]:
         role="brand_official",
         profile="品牌官方账号，目标是维护品牌形象并稳定舆论。",
         llm_client=llm,
+        topics=topics,
     )
 
     for i in range(5):
@@ -38,6 +39,7 @@ def build_agents(llm: LLMClient) -> Dict[str, Agent]:
             role="angry_user",
             profile="对负面事件非常愤怒，容易发表激烈批评。",
             llm_client=llm,
+            topics=topics,
         )
 
     for i in range(5):
@@ -47,6 +49,7 @@ def build_agents(llm: LLMClient) -> Dict[str, Agent]:
             role="neutral_user",
             profile="对事件保持观望，容易被他人观点影响。",
             llm_client=llm,
+            topics=topics,
         )
 
     for i in range(3):
@@ -56,6 +59,7 @@ def build_agents(llm: LLMClient) -> Dict[str, Agent]:
             role="fan_user",
             profile="长期关注该品牌，倾向于为品牌辩护。",
             llm_client=llm,
+            topics=topics,
         )
 
     agents["Media1"] = Agent(
@@ -63,6 +67,7 @@ def build_agents(llm: LLMClient) -> Dict[str, Agent]:
         role="media",
         profile="科技媒体账号，追求流量，也关心事实。",
         llm_client=llm,
+        topics=topics,
     )
 
     return agents
@@ -94,13 +99,14 @@ def inject_initial_rumor(env: SocialEnv, topic: str | None = None):
     """
     t=0，媒体发第一条热点爆料。
     """
-    env.t = 0
     any_agent = next(iter(env.agents.values()))
     llm = any_agent.llm
 
     system = "你是一个科技媒体账号，语气略带煽动。"
-    user = """写一条关于“热点科技产品存在安全隐患”的爆料帖，
-可以质疑其可靠性，但不要太长，1~2 句话。"""
+    if topic:
+        user = f"""写一条关于“{topic}”的爆料帖，可以质疑其中的风险或可信度，但不要太长，1~2 句话。"""
+    else:
+        user = """写一条关于“热点科技产品存在安全隐患”的爆料帖，可以质疑其可靠性，但不要太长，1~2 句话。"""
     text = llm.chat(system, user)
 
     env._add_post(
@@ -118,6 +124,7 @@ def simulate_steps(
     seed: int = 42,
     topics: list[str] | None = None,
     request_delay: float = 0.0,
+    hawkes_params: dict | None = None,
 ):
     """
     运行多时间步模拟，返回环境、每步新增帖子列表、以及话题热度快照。
@@ -125,13 +132,16 @@ def simulate_steps(
     random.seed(seed)
 
     llm = LLMClient()
-    agents = build_agents(llm)
+    agents = build_agents(llm, topics=topics)
     G = build_graph(agents.keys())
-    env = SocialEnv(agents, G, topics=topics)
+    env = SocialEnv(agents, G, topics=topics, hawkes_params=hawkes_params)
 
-    # 初始爆料关联首个话题
-    topic0 = topics[0] if topics else None
-    inject_initial_rumor(env, topic=topic0)
+    # 初始爆料：为每个话题种子一条（若未提供话题，则发一条默认）
+    if topics:
+        for tp in topics:
+            inject_initial_rumor(env, topic=tp)
+    else:
+        inject_initial_rumor(env, topic=None)
 
     steps = []
     heat_history = []
