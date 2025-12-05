@@ -3,6 +3,7 @@ from typing import List
 
 import pandas as pd
 import streamlit as st
+import matplotlib.pyplot as plt
 
 from simulate import simulate_steps, pick_default_topics
 from env.social_env import SocialEnv
@@ -59,6 +60,52 @@ def collect_agent_timeline(steps: List[List], agents) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def compute_pred_df(heat_history: List[dict]) -> pd.DataFrame:
+    if not heat_history:
+        return pd.DataFrame(columns=["time", "topic", "heat_pred"])
+    wide = pd.DataFrame(heat_history)
+    long = wide.melt(id_vars=["time"], var_name="topic", value_name="heat_pred")
+    return long
+
+
+def compute_metrics(pred_df: pd.DataFrame, real_df: pd.DataFrame):
+    merged = pred_df.merge(real_df, on=["time", "topic"], how="inner")
+    if merged.empty:
+        return None, None, None
+    merged["mse"] = (merged["heat_pred"] - merged["heat_real"]) ** 2
+    merged["ape"] = (merged["heat_pred"] - merged["heat_real"]).abs() / (merged["heat_real"].abs() + 1e-6)
+    overall_mse = float(merged["mse"].mean())
+    overall_mape = float(merged["ape"].mean() * 100)
+    per_topic = merged.groupby("topic").agg(
+        mape=("ape", lambda x: float(x.mean() * 100)),
+        mse=("mse", "mean"),
+    ).reset_index()
+    return overall_mse, overall_mape, per_topic
+
+
+def plot_metrics(per_topic: pd.DataFrame):
+    if per_topic is None or per_topic.empty:
+        return None
+    per_topic = per_topic.sort_values("mape", ascending=False)
+    plt.rcParams["font.family"] = "Times New Roman"
+    plt.rcParams["font.sans-serif"] = ["SimHei", "Microsoft YaHei", "Arial Unicode MS", "DejaVu Sans"]
+    plt.rcParams["axes.unicode_minus"] = False
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    axes[0].barh(per_topic["topic"], per_topic["mape"], color="#4C72B0")
+    axes[0].set_xlabel("MAPE (%)")
+    axes[0].set_title("Per-topic MAPE")
+    axes[0].invert_yaxis()
+
+    axes[1].barh(per_topic["topic"], per_topic["mse"], color="#55A868")
+    axes[1].set_xlabel("MSE")
+    axes[1].set_title("Per-topic MSE")
+    axes[1].invert_yaxis()
+
+    plt.tight_layout()
+    return fig
+
+
 def main():
     st.set_page_config(page_title="话题热度模拟", layout="wide")
     st.title("多智能体舆论模拟：话题与热度可视化")
@@ -84,6 +131,7 @@ def main():
     st.session_state["topics_input"] = topics_input
     raw_topics = topics_input.replace("\n", ",")
     topics = [t.strip() for t in raw_topics.split(",") if t.strip()]
+    real_file = st.sidebar.file_uploader("上传真实热度 CSV (列: time, topic, heat)", type=["csv"])
 
     if st.button("开始模拟"):
         st.info("正在创建环境并运行，请稍候...")
@@ -130,6 +178,29 @@ def main():
         st.subheader("全部帖子汇总")
         posts_df = collect_posts_df(env)
         st.dataframe(posts_df)
+
+        # 真实数据对比
+        if real_file:
+            try:
+                real_df = pd.read_csv(real_file)
+                if {"time", "topic", "heat"} <= set(real_df.columns):
+                    real_df = real_df.rename(columns={"heat": "heat_real"})
+                    pred_df = compute_pred_df(heat_history)
+                    overall_mse, overall_mape, per_topic = compute_metrics(pred_df, real_df)
+                    st.subheader("真实数据对比 (MAPE / MSE)")
+                    if overall_mse is not None:
+                        st.write(f"总体 MAPE: {overall_mape:.3f}%")
+                        st.write(f"总体 MSE: {overall_mse:.6f}")
+                        st.dataframe(per_topic)
+                        fig = plot_metrics(per_topic)
+                        if fig:
+                            st.pyplot(fig)
+                    else:
+                        st.info("无法对齐真实数据，请确认 time/topic 匹配。")
+                else:
+                    st.warning("真实数据需包含列: time, topic, heat")
+            except Exception as e:
+                st.error(f"真实数据处理失败: {e}")
 
 
 if __name__ == "__main__":
