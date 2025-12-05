@@ -125,6 +125,7 @@ def main():
     if not st.session_state["topics_input_user_set"]:
         st.session_state["topics_input"] = "\n".join(default_topics)
 
+    st.sidebar.markdown(f"**默认话题（前 5）**：{', '.join(default_topics)}")
     topics_input = st.sidebar.text_area(
         "自定义话题（逗号或换行分隔）",
         st.session_state["topics_input"],
