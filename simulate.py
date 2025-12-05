@@ -38,16 +38,15 @@ CLASSIFIED_EVENTS_CSV = Path("classified_events_35.csv")
 
 def pick_default_topics(seed: int = 42, k: int = 5) -> List[str]:
     """
-    从 classified_events_35.csv 中抽取唯一 topic，随机取 k 个。
+    从 classified_events_35.csv 中抽取唯一 topic；若随机不可控，则取前 k 个。
     """
     if CLASSIFIED_EVENTS_CSV.exists():
         df = pd.read_csv(CLASSIFIED_EVENTS_CSV)
         if "topic" in df.columns:
             uniq = df["topic"].dropna().unique().tolist()
             if uniq:
-                rng = random.Random(seed)
-                return rng.sample(uniq, k=min(k, len(uniq)))
-    # 如果文件缺失或无数据，返回空列表
+                # 按要求优先取前 k 个（保持确定性），若不足则返回全部
+                return uniq[: min(k, len(uniq))]
     return []
 
 
