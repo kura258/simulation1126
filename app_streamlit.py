@@ -118,7 +118,7 @@ def main():
     request_delay = st.sidebar.slider("API 请求间隔（秒）", 0.0, 2.0, 0.2, 0.05)
 
     # 默认话题：从 classified_events_35.csv 抽取 5 个，可在前端修改
-    default_topics = pick_default_topics(seed=base_seed, k=5) or ["数据安全", "全运会夺冠", "明星结婚"]
+    default_topics = pick_default_topics(seed=base_seed, k=5)
     # 如果用户未手动修改，则每次根据 seed 刷新默认话题
     if "topics_input_user_set" not in st.session_state:
         st.session_state["topics_input_user_set"] = False
