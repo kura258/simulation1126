@@ -1,9 +1,9 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence
-import time
 import math
+import time
 
 import networkx as nx
 
@@ -22,7 +22,7 @@ class Post:
 
 class TopicManager:
     """
-    话题管理器：维护帖子、热度，并采用基于霍克斯思想的自激热度模型。
+    维护话题热度，混合基础统计与简化的 Hawkes 记忆项。
     """
 
     def __init__(self, topics: Sequence[str], hawkes_params: Optional[Dict[str, float]] = None):
@@ -30,8 +30,9 @@ class TopicManager:
         self.alpha_v = params.get("alpha_v", params.get("alpha", 1.0))
         self.beta_c = params.get("beta_c", params.get("beta", 0.5))
         self.gamma_r = params.get("gamma_r", params.get("gamma", 0.3))
-        self.mu = params.get("mu", 0.1)          # 激发强度
-        self.decay = params.get("decay", params.get("lambda", 0.5))  # 衰减因子
+        # 兼容训练得到的双衰减参数，退化为单核使用 mu_fast / lambda_fast 近似
+        self.mu = params.get("mu", params.get("mu_fast", 0.1))
+        self.decay = params.get("decay", params.get("lambda", params.get("lambda_fast", 0.5)))
 
         self.topics: Dict[str, Dict[str, Any]] = {
             topic: {
@@ -62,7 +63,7 @@ class TopicManager:
 
     def add_post(self, topic: str, post_content: str, current_time: int = 0, reach: float = 0.0) -> None:
         """
-        记录帖子并更新热度。reach 表示作者影响力（如关注者数）。
+        记录新增帖子并刷新热度；reach 表示影响范围，可简单累加。
         """
         if topic not in self.topics:
             return
@@ -76,20 +77,17 @@ class TopicManager:
         tdata["heat"] = self._compute_heat(topic, current_time)
 
     def get_heat(self, topic: str) -> float:
-        """
-        获取话题当前热度，未知话题返回 0。
-        """
+        """获取当前热度；未知话题返回 0。"""
         return self.topics.get(topic, {}).get("heat", 0.0)
 
 
 class SocialEnv:
     """
-    社交媒体模拟环境：
-    - G：有向关注图
+    社交环境：
+    - G：关注关系图
     - agents：name -> Agent
     - posts：历史帖子列表
-    - t：当前时间步
-    - topic_manager：管理话题热度与帖子
+    - topic_manager：记录各话题热度
     """
 
     def __init__(
@@ -118,12 +116,8 @@ class SocialEnv:
             self.topic_manager = TopicManager(self._topics, self._hawkes_params)
 
     def _compute_reach(self, author: str) -> int:
-        """简单用粉丝数（入度）作为 reach 近似。"""
-        if not self.G or author not in self.G:
-            return 0
+        """简单地以关注入度作为传播影响力近似。"""
         return self.G.in_degree(author)
-
-    # ---- 内部工具 ----
 
     def _add_post(
         self,
@@ -133,8 +127,8 @@ class SocialEnv:
         tag: str,
         target_post_id: Optional[int] = None,
         topic: Optional[str] = None,
-    ) -> Post:
-        p = Post(
+    ):
+        post = Post(
             id=self._next_post_id,
             author=author,
             text=text,
@@ -145,77 +139,63 @@ class SocialEnv:
             topic=topic,
         )
         self._next_post_id += 1
-        self.posts.append(p)
+        self.posts.append(post)
 
         if self.topic_manager and topic:
             reach = self._compute_reach(author)
             self.topic_manager.add_post(topic, text, current_time=self.t, reach=reach)
 
-        return p
-
-    def record_topic_interaction(self, topic: str, content: str = "") -> None:
-        """
-        允许外部调用（如 Agent）直接为话题记录一次互动，提升热度。
-        """
-        if self.topic_manager:
-            self.topic_manager.add_post(topic, content or f"interaction on {topic}", current_time=self.t, reach=0)
-
-    def get_topic_heat(self, topic: str) -> float:
-        """
-        获取指定话题热度。
-        """
-        if not self.topic_manager:
-            return 0
-        return self.topic_manager.get_heat(topic)
-
-    def get_visible_posts_for(self, agent_name: str) -> List[Dict[str, Any]]:
-        """
-        在时间步 t，agent_name 可以看到 t-1 时刻其关注对象发布的帖子。
-        """
-        following = list(self.G.successors(agent_name))
-        recent_posts = [p for p in self.posts if p.author in following and p.time_step == self.t - 1]
-        result = []
-        for p in recent_posts:
-            result.append({
+    def step(self, pr_strategy=None, request_delay: float = 0.0):
+        """推进一个时间步，驱动所有 Agent 发言。"""
+        self.t += 1
+        new_posts: List[Post] = []
+        observed = [
+            {
                 "id": p.id,
                 "author": p.author,
                 "text": p.text,
-                "summary": p.text[:50],
+                "summary": p.text,
                 "sentiment": p.sentiment,
                 "tag": p.tag,
                 "topic": p.topic,
-            })
-        return result
-
-    # ---- 推进一个时间步 ----
-
-    def step(self, request_delay: float = 0.0):
-        """
-        执行一个时间步：所有 Agent 基于可见帖子发言，用于话题热度与传播模拟。
-        """
-        self.t += 1
-        new_posts: List[Post] = []
+            }
+            for p in self.posts
+            if p.time_step == self.t - 1
+        ]
 
         for name, agent in self.agents.items():
-            observed = self.get_visible_posts_for(name)
-            if not observed:
-                continue
-
-            action = agent.decide_social_action(self.t, observed, environment=self)
-            if action["action"] == "silent":
-                continue
-
-            p = self._add_post(
-                author=name,
-                text=action["post_text"],
-                sentiment=action["sentiment"],
-                tag="user",
-                target_post_id=action.get("target_post_id"),
-                topic=action.get("topic"),
-            )
-            new_posts.append(p)
-            agent.observe(f"我在时间 {self.t} 在社交媒体上发了：{p.text}")
             if request_delay > 0:
                 time.sleep(request_delay)
 
+            if pr_strategy and name == "BrandOfficial":
+                action = pr_strategy.decide_brand_action(self.t, agent, observed)
+            else:
+                action = agent.decide_social_action(self.t, observed, environment=self)
+
+            if action is None:
+                continue
+
+            act_type = action.get("action") or action.get("type")
+            if act_type == "post":
+                self._add_post(
+                    author=name,
+                    text=action.get("post_text", action.get("text", "")),
+                    sentiment=action.get("sentiment", "NEUTRAL"),
+                    tag=action.get("tag", "user"),
+                    topic=action.get("topic"),
+                )
+                new_posts.append(self.posts[-1])
+            elif act_type == "retweet":
+                target_id = action.get("target_post_id")
+                self._add_post(
+                    author=name,
+                    text=action.get("post_text", action.get("text", "")),
+                    sentiment=action.get("sentiment", "NEUTRAL"),
+                    tag="retweet",
+                    target_post_id=target_id,
+                    topic=action.get("topic"),
+                )
+                new_posts.append(self.posts[-1])
+            else:
+                continue
         return new_posts

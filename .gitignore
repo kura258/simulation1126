@@ -14,3 +14,6 @@ venv/
 
 # 本地模型文件（体积较大，可按需取消忽略）
 models/
+.DS_Store
+.DS_Store
+.DS_Store

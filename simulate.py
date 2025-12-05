@@ -1,13 +1,14 @@
 # simulate.py
 from __future__ import annotations
+
 import os
 import random
 import sys
 from typing import Dict, List, Optional
 
 import networkx as nx
-import numpy as np
 import pandas as pd
+from pathlib import Path
 
 # 把项目根目录加入模块搜索路径
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -16,9 +17,38 @@ if CURRENT_DIR not in sys.path:
 
 from agents.agent import Agent
 from agents.llm_client import LLMClient
-from agents.multi_agent_system import MultiAgentSystem
-from env.social_env import SocialEnv, TopicManager
-from utils.spread_model import HawkesProcess
+from env.social_env import SocialEnv
+from pr_strategies.strategies import (
+    DoNothingStrategy,
+    DelayedApologyStrategy,
+    FastClarifyStrategy,
+)
+
+# 非随机全量训练得到的最优参数（归一化数据）
+BEST_HAWKES_PARAMS = {
+    "mu_fast": 0.42099580293053274,
+    "mu_slow": 0.48524131259737846,
+    "H_base": 0.006935493256118603,
+    "lambda_fast": 4.859223589602316,
+    "lambda_slow": 1.9999982036603356,
+}
+
+CLASSIFIED_EVENTS_CSV = Path("classified_events_35.csv")
+
+
+def pick_default_topics(seed: int = 42, k: int = 5) -> List[str]:
+    """
+    从 classified_events_35.csv 中抽取唯一 topic，随机取 k 个。
+    """
+    if CLASSIFIED_EVENTS_CSV.exists():
+        df = pd.read_csv(CLASSIFIED_EVENTS_CSV)
+        if "topic" in df.columns:
+            uniq = df["topic"].dropna().unique().tolist()
+            if uniq:
+                rng = random.Random(seed)
+                return rng.sample(uniq, k=min(k, len(uniq)))
+    # 如果文件缺失或无数据，返回空列表
+    return []
 
 
 def build_agents(llm: LLMClient, topics: Optional[List[str]] = None) -> Dict[str, Agent]:
@@ -57,7 +87,7 @@ def build_agents(llm: LLMClient, topics: Optional[List[str]] = None) -> Dict[str
         agents[name] = Agent(
             name=name,
             role="fan_user",
-            profile="长期关注该品牌，倾向于为品牌辩护。",
+            profile="长期关注品牌，倾向于为品牌辩护。",
             llm_client=llm,
             topics=topics,
         )
@@ -120,21 +150,33 @@ def inject_initial_rumor(env: SocialEnv, topic: str | None = None):
 
 
 def simulate_steps(
-    T: int = 10,
+    T: int = 100,
     seed: int = 42,
-    topics: list[str] | None = None,
+    topics: Optional[List[str]] = None,
     request_delay: float = 0.0,
-    hawkes_params: dict | None = None,
+    hawkes_params: Optional[dict] = None,
+    pr_strategy: Optional[str] = None,
 ):
     """
     运行多时间步模拟，返回环境、每步新增帖子列表、以及话题热度快照。
     """
     random.seed(seed)
+    if not topics:
+        topics = pick_default_topics(seed=seed, k=5)
 
     llm = LLMClient()
     agents = build_agents(llm, topics=topics)
     G = build_graph(agents.keys())
-    env = SocialEnv(agents, G, topics=topics, hawkes_params=hawkes_params)
+    env = SocialEnv(agents, G, topics=topics, hawkes_params=hawkes_params or BEST_HAWKES_PARAMS)
+
+    # 选择公关策略
+    strategy = None
+    if pr_strategy == "S1":
+        strategy = DelayedApologyStrategy(brand_name="BrandOfficial")
+    elif pr_strategy == "S2":
+        strategy = FastClarifyStrategy(brand_name="BrandOfficial")
+    elif pr_strategy == "S0":
+        strategy = DoNothingStrategy(brand_name="BrandOfficial")
 
     # 初始爆料：为每个话题种子一条（若未提供话题，则发一条默认）
     if topics:
@@ -145,8 +187,8 @@ def simulate_steps(
 
     steps = []
     heat_history = []
-    for t in range(1, T + 1):
-        new_posts = env.step(request_delay=request_delay)
+    for _ in range(1, T + 1):
+        new_posts = env.step(pr_strategy=strategy, request_delay=request_delay)
         steps.append(new_posts)
         if env.topic_manager:
             snapshot = {"time": env.t}
@@ -156,8 +198,54 @@ def simulate_steps(
     return env, steps, heat_history
 
 
-def run_once(T: int = 10, seed: int = 42):
-    env, steps, _ = simulate_steps(T=T, seed=seed)
+def create_simulation_instance(strategy_name: str, seed: int = 42):
+    """创建一套完整的模拟实例：llm + agents + graph + env + pr_strategy"""
+    random.seed(seed)
+
+    default_topics = pick_default_topics(seed=seed, k=5)
+    llm = LLMClient()
+    agents = build_agents(llm, topics=default_topics)
+    G = build_graph(agents.keys())
+    env = SocialEnv(agents, G, topics=default_topics, hawkes_params=BEST_HAWKES_PARAMS)
+
+    if strategy_name == "S0":
+        strategy = DoNothingStrategy(brand_name="BrandOfficial")
+    elif strategy_name == "S1":
+        strategy = DelayedApologyStrategy(brand_name="BrandOfficial")
+    elif strategy_name == "S2":
+        strategy = FastClarifyStrategy(brand_name="BrandOfficial")
+    else:
+        raise ValueError(f"未知策略: {strategy_name}")
+
+    inject_initial_rumor(env)
+    return env, strategy
+
+
+def run_once(strategy_name: str = "S0", T: int = 100, seed: int = 42):
+    random.seed(seed)
+
+    default_topics = pick_default_topics(seed=seed, k=5)
+    llm = LLMClient()
+    agents = build_agents(llm, topics=default_topics)
+    G = build_graph(agents.keys())
+    env = SocialEnv(agents, G, topics=default_topics, hawkes_params=BEST_HAWKES_PARAMS)
+
+    if strategy_name == "S0":
+        strategy = DoNothingStrategy(brand_name="BrandOfficial")
+    elif strategy_name == "S1":
+        strategy = DelayedApologyStrategy(brand_name="BrandOfficial")
+    elif strategy_name == "S2":
+        strategy = FastClarifyStrategy(brand_name="BrandOfficial")
+    else:
+        raise ValueError("未知策略")
+
+    inject_initial_rumor(env)
+
+    for t in range(1, T + 1):
+        print(f"=== 时间步 {t} ===")
+        new_posts = env.step(pr_strategy=strategy)
+        for p in new_posts:
+            print(f"[{p.time_step}] {p.author}: {p.text} (sentiment={p.sentiment})")
 
     rows = []
     for p in env.posts:
@@ -173,5 +261,5 @@ def run_once(T: int = 10, seed: int = 42):
 
 
 if __name__ == "__main__":
-    df = run_once(T=8, seed=123)
+    df = run_once(strategy_name="S1", T=8, seed=123)
     print("总帖子数:", len(df))
