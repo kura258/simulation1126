@@ -118,8 +118,11 @@ def main():
     request_delay = st.sidebar.slider("API 请求间隔（秒）", 0.0, 2.0, 0.2, 0.05)
 
     # 默认话题：从 classified_events_35.csv 抽取 5 个，可在前端修改
-    if "topics_input" not in st.session_state:
-        default_topics = pick_default_topics(seed=base_seed, k=5) or ["数据安全", "全运会夺冠", "明星结婚"]
+    default_topics = pick_default_topics(seed=base_seed, k=5) or ["数据安全", "全运会夺冠", "明星结婚"]
+    # 如果用户未手动修改，则每次根据 seed 刷新默认话题
+    if "topics_input_user_set" not in st.session_state:
+        st.session_state["topics_input_user_set"] = False
+    if not st.session_state["topics_input_user_set"]:
         st.session_state["topics_input"] = "\n".join(default_topics)
 
     topics_input = st.sidebar.text_area(
@@ -128,7 +131,9 @@ def main():
         height=80,
         placeholder="示例：\n数据安全\n全运会夺冠\n明星结婚",
     )
-    st.session_state["topics_input"] = topics_input
+    if topics_input != st.session_state.get("topics_input", ""):
+        st.session_state["topics_input"] = topics_input
+        st.session_state["topics_input_user_set"] = True
     raw_topics = topics_input.replace("\n", ",")
     topics = [t.strip() for t in raw_topics.split(",") if t.strip()]
     real_file = st.sidebar.file_uploader("上传真实热度 CSV (列: time, topic, heat)", type=["csv"])
