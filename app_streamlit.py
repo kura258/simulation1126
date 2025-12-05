@@ -4,7 +4,7 @@ from typing import List
 import pandas as pd
 import streamlit as st
 
-from simulate import simulate_steps
+from simulate import simulate_steps, pick_default_topics
 from env.social_env import SocialEnv
 
 
@@ -65,16 +65,23 @@ def main():
 
     # 控制面板
     st.sidebar.header("模拟参数")
-    T = st.sidebar.slider("模拟时间步数", min_value=5, max_value=30, value=10, step=1)
+    T = st.sidebar.slider("模拟时间步数", min_value=10, max_value=120, value=100, step=5)
     base_seed = st.sidebar.number_input("随机种子", min_value=0, max_value=9999, value=42)
     delay_sec = st.sidebar.slider("每步界面延迟（秒）", 0.0, 2.0, 0.2, 0.05)
     request_delay = st.sidebar.slider("API 请求间隔（秒）", 0.0, 2.0, 0.2, 0.05)
+
+    # 默认话题：从 classified_events_35.csv 抽取 5 个，可在前端修改
+    if "topics_input" not in st.session_state:
+        default_topics = pick_default_topics(seed=base_seed, k=5) or ["数据安全", "全运会夺冠", "明星结婚"]
+        st.session_state["topics_input"] = "\n".join(default_topics)
+
     topics_input = st.sidebar.text_area(
         "自定义话题（逗号或换行分隔）",
-        "数据安全,全运会夺冠,明星结婚",
+        st.session_state["topics_input"],
         height=80,
         placeholder="示例：\n数据安全\n全运会夺冠\n明星结婚",
     )
+    st.session_state["topics_input"] = topics_input
     raw_topics = topics_input.replace("\n", ",")
     topics = [t.strip() for t in raw_topics.split(",") if t.strip()]
 
