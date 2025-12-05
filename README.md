@@ -15,8 +15,8 @@
 - 默认模拟话题来源：`classified_events_35.csv`（前 5 个 topic）。
 
 ## LLM 配置
-- 客户端：`agents/llm_client.py` 默认使用 `https://api.openai-proxy.org/v1`，模型 `gpt-4o-mini`，API Key 可在环境变量 `SILICONFLOW_API_KEY` 或代码默认值设置。
-- 如需自定义：在 `.env` 中配置 `SILICONFLOW_API_KEY`、`SILICONFLOW_BASE_URL`、`SILICONFLOW_MODEL`。
+- 客户端：`agents/llm_client.py` 默认使用 `https://api.openai-proxy.org/v1`，模型 `gpt-4o-mini`，API Key 可在环境变量 `CLOSEAI_API_KEY` 或代码默认值设置。
+- 如需自定义：在 `.env` 中配置 `CLOSEAI_API_KEY`、`CLOSEAI_BASE_URL`、`CLOSEAI_MODEL`。
 
 ## 依赖与环境
 ```bash

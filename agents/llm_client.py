@@ -8,6 +8,9 @@ from dotenv import load_dotenv
 import requests
 
 
+PROXY_BASE_URL = "https://api.openai-proxy.org/v1"
+
+
 class LLMClient:
     """
     简化版 Chat Completions 客户端（兼容 OpenAI 风格接口）。
@@ -27,19 +30,16 @@ class LLMClient:
 
         # 优先入参，其次环境变量，最后使用提供的默认值
         self.api_key = api_key or os.getenv(
-            "SILICONFLOW_API_KEY",
+            "CLOSEAI_API_KEY",
             "sk-IzBkdFXS1V25hei9N9r6nqs2oxpBfC0HF63WsZVawAhhPJNI",
         )
         if not self.api_key:
-            raise ValueError("请在 .env 中设置 SILICONFLOW_API_KEY")
+            raise ValueError("请在 .env 中设置 CLOSEAI_API_KEY")
 
-        self.base_url = base_url or os.getenv(
-            "SILICONFLOW_BASE_URL",
-            "https://api.openai-proxy.org/v1",
-        )
+        self.base_url = base_url or os.getenv("CLOSEAI_BASE_URL", PROXY_BASE_URL)
 
         self.model_name = model_name or os.getenv(
-            "SILICONFLOW_MODEL",
+            "CLOSEAI_MODEL",
             "gpt-4o-mini",
         )
 
