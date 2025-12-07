@@ -1,22 +1,21 @@
 # 多智能体舆论博弈模拟（话题热度预测版）
 
-基于多代理 + Hawkes 自激模型的舆论演化小实验，提供训练/评估脚本与 Streamlit 前端。当前默认使用双衰减核（爆发+长尾）拟合 35 个事件数据，并在模拟中内置最优参数。
+基于多代理 + Hawkes 双衰减核（爆发/长尾）的舆论演化实验，提供训练、模拟、前端对比。
+
+## 最新要点
+- 5 个代表性微博画像：权威媒体/官方、KOL、杠精、护卫队、吃瓜群众，默认话题为最新训练集前 5 个（哈工大你玩真的啊、为啥网上的药比实体药店更便宜、晒晒家乡隐藏款土特产、太空发快递可以当日达了、春晚节目）。
+- 最新 Hawkes 最优参数（未归一化）：mu_fast=0.58896, mu_slow=0.19392, H_base=1.81348, lambda_fast=4.99670, lambda_slow=0.66370；默认 heat_scale=1e4 便于对齐真实量级。
+- 模拟支持权重调度：爆发角色用 lambda_fast 衰减，长尾角色用 lambda_slow，按热度和上次发声时间决定出场概率（约 40%/步）。
+- 前端可一键加载默认真实数据（`../huoju/dataset_peak350/classified_events_35_2024Q1-Q4_peak350_v2.csv`），自动对齐时间步并计算 MSE/MAPE，绘制 Sim vs Real 对比。
 
 ## 功能概览
-- 多角色 Agent：品牌官方、愤怒用户、中立吃瓜、粉丝、媒体；支持话题注意力分配与记忆流。
-- 话题热度：TopicManager 记录帖子与热度；传播侧可用 Hawkes 自激；训练侧使用双衰减核（mu_fast/mu_slow/H_base/lambda_fast/lambda_slow）。
-- 前端：可输入自定义话题/时间步（默认 100），显示热度曲线、帖子列表、Agent 行为时间线；支持上传真实数据 CSV，对比 MAPE/MSE，并给出按话题的对比图。
-- 默认话题：从 `classified_events_35.csv` 的前 5 个唯一 topic 填充侧边栏（仍可自行修改）。
-- 可视化：`plots_huoju_norm` 提供 35 个事件的真实/预测曲线；`plots_huoju_norm_overview.png` 为总览。
+- 多角色 Agent：5 画像（official_media / kol / troll / defender / crowd），话题注意力分配与记忆流。
+- 话题热度：TopicManager 记录帖子与热度，双衰减核（mu_fast/mu_slow/H_base/lambda_fast/lambda_slow）+ 可调 heat_scale。
+- 前端：自定义话题与时间步（默认 350），展示热度曲线、帖子列表、Agent 时间线；支持真实数据对比（MAPE/MSE）。
 
 ## 数据
-- 训练/评估：`datasets/`（示例 34+ 事件，时间序列 heat）。
-- 归一化拆分：`classified_events_35.csv`（topic, heat, timestamp），已按话题拆为 `datasets_huoju*`。
-- 默认模拟话题来源：`classified_events_35.csv`（前 5 个 topic）。
-
-## LLM 配置
-- 客户端：`agents/llm_client.py` 默认使用 `https://api.openai-proxy.org/v1`，模型 `gpt-4o-mini`，API Key 可在环境变量 `CLOSEAI_API_KEY` 或代码默认值设置。
-- 如需自定义：在 `.env` 中配置 `CLOSEAI_API_KEY`、`CLOSEAI_BASE_URL`、`CLOSEAI_MODEL`。
+- 默认真实/训练参考：`../huoju/dataset_peak350/classified_events_35_2024Q1-Q4_peak350_v2.csv`（topic, heat, timestamp，约 350 步/话题）。
+- 旧示例：`datasets/`、`datasets_huoju*`、`classified_events_35.csv` 等。
 
 ## 依赖与环境
 ```bash
@@ -26,44 +25,37 @@ python -m venv venv
 pip install -r requirements.txt
 ```
 
-## 训练与评估
-- 全局参数拟合（双衰减核）：
+## 训练（双衰减核）
 ```bash
-python train.py --data_dir datasets_huoju_norm        # 归一化数据
-python train.py --data_dir datasets_huoju_norm --random_test --seed 123  # 随机抽 10% 作为 test
+python train.py --data_dir datasets_huoju_norm
+python train.py --data_dir datasets_huoju_norm --random_test --seed 123
 ```
-- 评估脚本：`test_oos.py`（可自填最优参数，输出 MSE/MAPE + 可视化）。
-
 模型形式：
 ```
-pred_t = H_base + mu_fast * M_fast + mu_slow * M_slow
-M_fast = M_fast * exp(-lambda_fast) + y_{t-1}
-M_slow = M_slow * exp(-lambda_slow) + y_{t-1}
-约束：lambda_fast > lambda_slow > 0，所有参数为正
+pred_t = H_base + mu_fast*M_fast + mu_slow*M_slow
+M_fast = M_fast*exp(-lambda_fast) + y_{t-1}
+M_slow = M_slow*exp(-lambda_slow) + y_{t-1}
+约束：lambda_fast > lambda_slow > 0
 ```
 
-## 模拟与前端
-- 命令行单次模拟（默认 T=100，话题取前 5 个）：
+## 模拟与对比
+- 命令行单次模拟并对比默认真实数据：
 ```bash
-python simulate.py
+python simulate.py   # __main__ 调用 run_and_compare，T=350，默认话题与参数
 ```
 - Streamlit 前端：
 ```bash
 streamlit run app_streamlit.py
 # 浏览器访问 http://localhost:8501
 ```
-侧边栏可设置时间步数、随机种子、API 请求间隔；显示默认话题（来自 `classified_events_35.csv` 前 5 个），支持自定义输入。上传真实热度 CSV（列：time, topic, heat）后，会计算总体/分话题 MAPE、MSE 并绘制对比图。
+侧边栏：时间步、随机种子、默认话题（可自定义），可选“使用默认真实数据”，也可上传 CSV（time/topic/heat 或 timestamp/topic/heat）。自动计算总体/分话题 MAPE、MSE 并绘图。
 
 ## 主要文件
-- `simulate.py`：默认最优参数、话题抽取、时间步 100 的多 Agent 模拟。
-- `app_streamlit.py`：交互式前端，包含真实数据对比与话题提示。
-- `agents/agent.py` / `agents/memory.py` / `agents/llm_client.py`：Agent 逻辑、记忆流、LLM 客户端。
-- `env/social_env.py`：社交环境与话题热度管理（兼容 Hawkes 近似参数）。
-- `utils/spread_model.py`：双衰减核自激预测器。
-- `train.py` / `utils/data_loader.py`：训练数据加载与参数拟合。
-- `plots_huoju_norm/*.png`：35 个事件的真实/预测可视化；`plots_huoju_norm_overview.png` 总览。
+- `simulate.py`：默认最优参数、权重调度、run_and_compare（Sim vs Real 图与 MSE/MAPE）。
+- `app_streamlit.py`：前端交互，默认加载最新真实数据，可上传替换。
+- `agents/agent.py`：角色提示/行为决策；`env/social_env.py`：热度管理、Agent 出场权重调度。
+- `train.py` / `utils/data_loader.py`：训练加载与参数拟合；`utils/spread_model.py`：双衰减核预测。
 
 ## 注意
-- 需可用的 LLM API Key；如在受限网络，需自行配置代理或离线策略。
-- 大模型调用有重试兜底；仍建议检查网络/证书/限流。
-- 数据与参数均为示例用途，可替换为自有话题与序列。***
+- 需要可用的 LLM API Key（见 `agents/llm_client.py`）；受限网络请自配代理/离线策略。
+- heat_scale 可按真实量级调节；权重调度可在 `env/social_env.py` 进一步微调爆发/长尾参与度。
