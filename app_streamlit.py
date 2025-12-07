@@ -1,11 +1,12 @@
 ﻿import time
-from typing import List
+from typing import List, Optional
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
 
-from simulate import simulate_steps, pick_default_topics
+from simulate import simulate_steps, pick_default_topics, DEFAULT_REAL_DATA_PATH
 from env.social_env import SocialEnv
 
 
@@ -68,10 +69,36 @@ def compute_pred_df(heat_history: List[dict]) -> pd.DataFrame:
     return long
 
 
-def compute_metrics(pred_df: pd.DataFrame, real_df: pd.DataFrame):
+def normalize_real_df(raw_df: pd.DataFrame, topics: List[str]) -> Optional[pd.DataFrame]:
+    """
+    将真实数据规范化为列：time, topic, heat_real
+    - 若有 time 列直接使用
+    - 若有 timestamp 列则按时间排序并为每个 topic 生成递增步数
+    """
+    df = raw_df.copy()
+    if {"topic", "heat", "time"} <= set(df.columns):
+        df = df.rename(columns={"heat": "heat_real"})
+    elif {"topic", "heat", "timestamp"} <= set(df.columns):
+        df = df.rename(columns={"heat": "heat_real"})
+        df = df.sort_values(["topic", "timestamp"])
+        df["time"] = df.groupby("topic").cumcount() + 1
+    else:
+        return None
+    if topics:
+        df = df[df["topic"].isin(topics)]
+    return df[["time", "topic", "heat_real"]]
+
+
+def compute_metrics(pred_df: pd.DataFrame, real_df: pd.DataFrame, topic_max: pd.Series | None = None):
     merged = pred_df.merge(real_df, on=["time", "topic"], how="inner")
     if merged.empty:
         return None, None, None
+    if topic_max is not None:
+        merged = merged.join(topic_max.rename("heat_max"), on="topic")
+        merged["heat_max"] = merged["heat_max"].replace(0, 1e-6)
+        merged["heat_real"] = merged["heat_real"] / merged["heat_max"]
+        merged["heat_pred"] = merged["heat_pred"] / merged["heat_max"]
+
     merged["mse"] = (merged["heat_pred"] - merged["heat_real"]) ** 2
     merged["ape"] = (merged["heat_pred"] - merged["heat_real"]).abs() / (merged["heat_real"].abs() + 1e-6)
     overall_mse = float(merged["mse"].mean())
@@ -112,7 +139,7 @@ def main():
 
     # 控制面板
     st.sidebar.header("模拟参数")
-    T = st.sidebar.slider("模拟时间步数", min_value=10, max_value=120, value=100, step=5)
+    T = st.sidebar.slider("模拟时间步数", min_value=10, max_value=400, value=350, step=5)
     base_seed = st.sidebar.number_input("随机种子", min_value=0, max_value=9999, value=42)
     delay_sec = st.sidebar.slider("每步界面延迟（秒）", 0.0, 2.0, 0.2, 0.05)
     request_delay = st.sidebar.slider("API 请求间隔（秒）", 0.0, 2.0, 0.2, 0.05)
@@ -138,6 +165,7 @@ def main():
     raw_topics = topics_input.replace("\n", ",")
     topics = [t.strip() for t in raw_topics.split(",") if t.strip()]
     real_file = st.sidebar.file_uploader("上传真实热度 CSV (列: time, topic, heat)", type=["csv"])
+    use_default_real = st.sidebar.checkbox("使用默认真实数据（最新训练集）", value=True)
 
     if st.button("开始模拟"):
         st.info("正在创建环境并运行，请稍候...")
@@ -185,28 +213,35 @@ def main():
         posts_df = collect_posts_df(env)
         st.dataframe(posts_df)
 
-        # 真实数据对比
+        # 真实数据对比（默认加载最新训练集，也可上传覆盖）
+        real_df = None
         if real_file:
             try:
                 real_df = pd.read_csv(real_file)
-                if {"time", "topic", "heat"} <= set(real_df.columns):
-                    real_df = real_df.rename(columns={"heat": "heat_real"})
-                    pred_df = compute_pred_df(heat_history)
-                    overall_mse, overall_mape, per_topic = compute_metrics(pred_df, real_df)
-                    st.subheader("真实数据对比 (MAPE / MSE)")
-                    if overall_mse is not None:
-                        st.write(f"总体 MAPE: {overall_mape:.3f}%")
-                        st.write(f"总体 MSE: {overall_mse:.6f}")
-                        st.dataframe(per_topic)
-                        fig = plot_metrics(per_topic)
-                        if fig:
-                            st.pyplot(fig)
-                    else:
-                        st.info("无法对齐真实数据，请确认 time/topic 匹配。")
-                else:
-                    st.warning("真实数据需包含列: time, topic, heat")
             except Exception as e:
-                st.error(f"真实数据处理失败: {e}")
+                st.error(f"真实数据读取失败: {e}")
+                real_df = None
+        elif use_default_real and DEFAULT_REAL_DATA_PATH.exists():
+            real_df = pd.read_csv(DEFAULT_REAL_DATA_PATH)
+
+        if real_df is not None:
+            norm_real = normalize_real_df(real_df, topics)
+            if norm_real is None or norm_real.empty:
+                st.warning("真实数据需包含列: time/topic/heat 或 timestamp/topic/heat。")
+            else:
+                topic_max = norm_real.groupby("topic")["heat_real"].max()
+                pred_df = compute_pred_df(heat_history)
+                overall_mse, overall_mape, per_topic = compute_metrics(pred_df, norm_real, topic_max=topic_max)
+                st.subheader("真实数据对比 (MAPE / MSE)")
+                if overall_mse is not None:
+                    st.write(f"总体 MAPE: {overall_mape:.3f}%")
+                    st.write(f"总体 MSE: {overall_mse:.6f}")
+                    st.dataframe(per_topic)
+                    fig = plot_metrics(per_topic)
+                    if fig:
+                        st.pyplot(fig)
+                else:
+                    st.info("无法对齐真实数据，请确认 time/topic 匹配。")
 
 
 if __name__ == "__main__":

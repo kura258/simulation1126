@@ -8,6 +8,7 @@ from typing import Dict, List, Optional
 
 import networkx as nx
 import pandas as pd
+import numpy as np
 from pathlib import Path
 
 # 把项目根目录加入模块搜索路径
@@ -23,78 +24,78 @@ from pr_strategies.strategies import (
     DelayedApologyStrategy,
     FastClarifyStrategy,
 )
+import math
+import matplotlib.pyplot as plt
 
 # 非随机全量训练得到的最优参数（归一化数据）
 BEST_HAWKES_PARAMS = {
-    "mu_fast": 0.42099580293053274,
-    "mu_slow": 0.48524131259737846,
-    "H_base": 0.006935493256118603,
-    "lambda_fast": 4.859223589602316,
-    "lambda_slow": 1.9999982036603356,
+    # 来自未归一化数据的最新全局最优参数
+    "mu_fast": 0.5889573726987519,
+    "mu_slow": 0.19392023078364723,
+    "H_base": 1.8134757737318496,
+    "lambda_fast": 4.996698275314672,
+    "lambda_slow": 0.663701052879747,
 }
 
-CLASSIFIED_EVENTS_CSV = Path("classified_events_35.csv")
+# 默认话题（来自最新训练集，取前 5 个）
+DEFAULT_TOPICS = [
+    "哈工大你玩真的啊",
+    "为啥网上的药比实体药店更便宜",
+    "晒晒家乡隐藏款土特产",
+    "太空发快递可以当日达了",
+    "春晚节目",
+]
+# 默认参考真实数据路径（最新训练集）
+DEFAULT_REAL_DATA_PATH = Path("..") / "huoju" / "dataset_peak350" / "classified_events_35_2024Q1-Q4_peak350_v2.csv"
 
 
 def pick_default_topics(seed: int = 42, k: int = 5) -> List[str]:
     """
-    从 classified_events_35.csv 中抽取唯一 topic；若随机不可控，则取前 k 个。
+    直接使用 DEFAULT_TOPICS，保证确定性。
     """
-    if CLASSIFIED_EVENTS_CSV.exists():
-        df = pd.read_csv(CLASSIFIED_EVENTS_CSV)
-        if "topic" in df.columns:
-            uniq = df["topic"].dropna().unique().tolist()
-            if uniq:
-                # 按要求优先取前 k 个（保持确定性），若不足则返回全部
-                return uniq[: min(k, len(uniq))]
-    return []
+    return DEFAULT_TOPICS[: min(k, len(DEFAULT_TOPICS))]
 
 
 def build_agents(llm: LLMClient, topics: Optional[List[str]] = None) -> Dict[str, Agent]:
+    """构建 5 个代表性画像的微博生态 Agent。"""
     agents: Dict[str, Agent] = {}
 
     agents["BrandOfficial"] = Agent(
         name="BrandOfficial",
-        role="brand_official",
-        profile="品牌官方账号，目标是维护品牌形象并稳定舆论。",
+        role="official_media",
+        profile="权威媒体/官方：客观、冷静、强调核实，不信谣不传谣。",
         llm_client=llm,
         topics=topics,
     )
 
-    for i in range(5):
-        name = f"AngryUser{i+1}"
-        agents[name] = Agent(
-            name=name,
-            role="angry_user",
-            profile="对负面事件非常愤怒，容易发表激烈批评。",
-            llm_client=llm,
-            topics=topics,
-        )
+    agents["KOL"] = Agent(
+        name="KOL",
+        role="kol",
+        profile="意见领袖/营销号：爱带节奏，反问、悬念、情绪化吸引流量。",
+        llm_client=llm,
+        topics=topics,
+    )
 
-    for i in range(5):
-        name = f"NeutralUser{i+1}"
-        agents[name] = Agent(
-            name=name,
-            role="neutral_user",
-            profile="对事件保持观望，容易被他人观点影响。",
-            llm_client=llm,
-            topics=topics,
-        )
+    agents["Troll"] = Agent(
+        name="Troll",
+        role="troll",
+        profile="极端情绪/杠精：尖锐、嘲讽、挑衅，擅长制造冲突。",
+        llm_client=llm,
+        topics=topics,
+    )
 
-    for i in range(3):
-        name = f"FanUser{i+1}"
-        agents[name] = Agent(
-            name=name,
-            role="fan_user",
-            profile="长期关注品牌，倾向于为品牌辩护。",
-            llm_client=llm,
-            topics=topics,
-        )
+    agents["Defender"] = Agent(
+        name="Defender",
+        role="defender",
+        profile="死忠粉/护卫队：极度护短，控评、呼吁理性，抵制黑子。",
+        llm_client=llm,
+        topics=topics,
+    )
 
-    agents["Media1"] = Agent(
-        name="Media1",
-        role="media",
-        profile="科技媒体账号，追求流量，也关心事实。",
+    agents["Crowd"] = Agent(
+        name="Crowd",
+        role="crowd",
+        profile="吃瓜群众：路人心态，简短跟风，热度高时才出现。",
         llm_client=llm,
         topics=topics,
     )
@@ -106,12 +107,12 @@ def build_graph(agent_names):
     G = nx.DiGraph()
     G.add_nodes_from(agent_names)
 
-    # 所有人都关注官方账号与媒体
+    # 所有人都关注官方与KOL
     for name in agent_names:
         if name != "BrandOfficial":
             G.add_edge(name, "BrandOfficial")
-        if name != "Media1":
-            G.add_edge(name, "Media1")
+        if name != "KOL":
+            G.add_edge(name, "KOL")
 
     # 再随机补充一些关注关系
     names = list(agent_names)
@@ -197,6 +198,125 @@ def simulate_steps(
     return env, steps, heat_history
 
 
+# ---------------------------------------------------------------------
+# 真实数据对比工具
+# ---------------------------------------------------------------------
+
+def _load_real_series(real_path: Path, topics: List[str], max_steps: int = 350) -> Dict[str, List[float]]:
+    """
+    从真实数据 CSV 读取指定 topic 的热度序列，按 timestamp 排序，截断到 max_steps。
+    CSV 列：topic, heat, timestamp
+    """
+    if not real_path.exists():
+        return {t: [] for t in topics}
+    df = pd.read_csv(real_path)
+    series: Dict[str, List[float]] = {t: [] for t in topics}
+    for t in topics:
+        sub = df[df["topic"] == t].sort_values("timestamp")
+        heats = sub["heat"].astype(float).tolist()[:max_steps]
+        series[t] = heats
+    return series
+
+
+def _compute_metrics(sim_series: Dict[str, List[float]], real_series: Dict[str, List[float]]):
+    """
+    计算 MSE / MAPE（按公共长度对齐）。
+    返回 overall 与 per-topic 结果。
+    """
+    def mse(a, b):
+        return sum((x - y) ** 2 for x, y in zip(a, b)) / max(len(a), 1)
+
+    def mape(a, b):
+        return sum(abs(x - y) / max(abs(y), 1e-6) for x, y in zip(a, b)) / max(len(a), 1) * 100.0
+
+    per_topic = {}
+    mse_total = 0.0
+    mape_total = 0.0
+    n = 0
+    for t, sim in sim_series.items():
+        real = real_series.get(t, [])
+        L = min(len(sim), len(real))
+        if L == 0:
+            continue
+        sim_cut = sim[:L]
+        real_cut = real[:L]
+        m = mse(sim_cut, real_cut)
+        p = mape(sim_cut, real_cut)
+        per_topic[t] = {"mse": m, "mape": p, "len": L}
+        mse_total += m
+        mape_total += p
+        n += 1
+    overall = {"avg_mse": mse_total / n if n else 0.0, "avg_mape": mape_total / n if n else 0.0}
+    return overall, per_topic
+
+
+def _plot_comparison(sim_series: Dict[str, List[float]], real_series: Dict[str, List[float]], out_path: Path):
+    topics = list(sim_series.keys())
+    if not topics:
+        return
+    cols = 2
+    rows = math.ceil(len(topics) / cols)
+    fig, axes = plt.subplots(rows, cols, figsize=(12, 3 * rows), sharex=False)
+    axes = axes.flatten() if isinstance(axes, (list, tuple, np.ndarray)) else [axes]
+    for ax in axes[len(topics):]:
+        ax.axis("off")
+    for idx, topic in enumerate(topics):
+        ax = axes[idx]
+        sim = sim_series.get(topic, [])
+        real = real_series.get(topic, [])
+        L = min(len(sim), len(real))
+        x_sim = list(range(len(sim)))
+        ax.plot(x_sim, sim, label="Sim", color="#1f77b4", linewidth=1.2)
+        ax.plot(list(range(L)), real[:L], label="Real", color="#d62728", linestyle="--", linewidth=1.0)
+        ax.set_title(topic, fontsize=9)
+        ax.tick_params(labelsize=8)
+    handles, labels = axes[0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="upper center", ncol=2, fontsize=9, frameon=False)
+    fig.suptitle("Simulation vs Real Heat", fontsize=12)
+    fig.tight_layout(rect=[0, 0, 1, 0.96])
+    fig.savefig(out_path, dpi=180, bbox_inches="tight")
+    plt.close(fig)
+
+
+def run_and_compare(
+    T: int = 350,
+    seed: int = 42,
+    topics: Optional[List[str]] = None,
+    hawkes_params: Optional[dict] = None,
+    real_data_path: Optional[Path] = None,
+):
+    """
+    运行模拟并与最新训练数据对比，输出 MSE/MAPE 和对比图。
+    """
+    topics = topics or DEFAULT_TOPICS
+    real_path = real_data_path or DEFAULT_REAL_DATA_PATH
+    env, steps, heat_history = simulate_steps(
+        T=T,
+        seed=seed,
+        topics=topics,
+        hawkes_params=hawkes_params or BEST_HAWKES_PARAMS,
+    )
+    # 收集模拟热度
+    sim_series = {t: [] for t in topics}
+    for snap in heat_history:
+        for t in topics:
+            sim_series[t].append(snap.get(t, 0.0))
+
+    # 读取真实热度
+    real_series = _load_real_series(real_path, topics, max_steps=len(heat_history))
+
+    overall, per_topic = _compute_metrics(sim_series, real_series)
+    plot_path = Path("simulation_vs_real.png")
+    _plot_comparison(sim_series, real_series, plot_path)
+
+    print(f"Real data path: {real_path}")
+    print(f"Simulation vs Real -> AVG MSE: {overall['avg_mse']:.4f}, AVG MAPE: {overall['avg_mape']:.2f}%")
+    for t, m in per_topic.items():
+        print(f"  {t}: MSE={m['mse']:.4f}, MAPE={m['mape']:.2f}%, len={m['len']}")
+    print(f"Plot saved to {plot_path}")
+    return overall, per_topic, plot_path
+
+
 def create_simulation_instance(strategy_name: str, seed: int = 42):
     """创建一套完整的模拟实例：llm + agents + graph + env + pr_strategy"""
     random.seed(seed)
@@ -260,5 +380,4 @@ def run_once(strategy_name: str = "S0", T: int = 100, seed: int = 42):
 
 
 if __name__ == "__main__":
-    df = run_once(strategy_name="S1", T=8, seed=123)
-    print("总帖子数:", len(df))
+    run_and_compare(T=350, seed=123)
